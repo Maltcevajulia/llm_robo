@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from assistant.infra.llm import LLMClient
@@ -15,8 +16,23 @@ from assistant.infra.schemas import (
     ENTITY_TYPES,
     RELATION_SIGNATURES,
 )
-from assistant.infra.grounding import find_codes, normalize_code, code_type
 from assistant.infra.config import vocabulary
+
+
+def _extract_valid_codes(text: str) -> set[str]:
+    """Извлекает все валидные коды из текста (с учетом русских букв и пробелов)."""
+    # Ищем паттерн: 1-3 буквы, пробел или дефис, 2-4 цифры, возможно буква в конце
+    pattern = r'(?<![A-ZА-Я])([A-ZА-Я]{1,3})[\s\-]+(\d{2,4})([A-ZА-Я]?)(?![A-ZА-Я])'
+    matches = re.findall(pattern, text.upper())
+    
+    # Таблица замены русских букв на английские (ровно 12 пар)
+    trans = str.maketrans("АВЕКМНОРСТУХ", "ABEKMHOPCTYX")
+    codes = set()
+    for prefix, digits, suffix in matches:
+        p = prefix.translate(trans)
+        s = suffix.translate(trans)
+        codes.add(f"{p}-{digits}{s}")
+    return codes
 
 
 def _build_messages(chunk: Chunk, vocab: dict[str, list[str]]) -> list[dict]:
@@ -69,14 +85,18 @@ def _validate_entity(
         return None, "пустое имя"
 
     if etype in ("Model", "Part", "ErrorCode", "Procedure"):
-        norm = normalize_code(name)
-        if not norm or norm not in find_codes(chunk_text):
+        # Приводим имя к каноническому виду: заменяем пробелы на дефисы, переводим в верхний регистр,
+        # и заменяем русские буквы на английские
+        name_upper = name.upper().replace(" ", "-")
+        trans = str.maketrans("АВЕКМНОРСТУХ", "ABEKMHOPCTYX")
+        norm = name_upper.translate(trans)
+        
+        valid_codes = _extract_valid_codes(chunk_text)
+        if norm not in valid_codes:
             return None, f"код {name!r} отсутствует в тексте чанка"
-        if code_type(norm) != etype:
-            return None, f"код {norm!r} не соответствует типу {etype}"
+            
         return Entity(type=etype, name=norm), None
     else:
-        # Прямой поиск по словарю (игнорируя регистр)
         allowed_names = vocab.get(etype, [])
         canon = None
         for allowed in allowed_names:
@@ -90,22 +110,18 @@ def _validate_entity(
 
 
 def _is_valid_response(parsed: Any) -> bool:
-    """Проверяет, что ответ модели содержит нужные списки и поля."""
     if not isinstance(parsed, dict):
         return False
     if not isinstance(parsed.get("entities"), list) or not isinstance(parsed.get("relations"), list):
         return False
-    
     for ent in parsed["entities"]:
         if not isinstance(ent, dict) or "type" not in ent or "name" not in ent:
             return False
-            
     for rel in parsed["relations"]:
         if not isinstance(rel, dict):
             return False
         if not all(k in rel for k in ("subject", "subject_type", "type", "object", "object_type")):
             return False
-            
     return True
 
 
@@ -132,7 +148,6 @@ def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
     entities: dict[str, Entity] = {}
     by_name: dict[str, Entity] = {}
 
-    # 1. Сначала добавляем сущности из списка entities
     for ent_raw in raw["entities"]:
         ent, err = _validate_entity(ent_raw, chunk.text, vocab)
         if err:
@@ -141,7 +156,6 @@ def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
         entities[ent.node_id] = ent
         by_name[str(ent_raw.get("name", "")).strip()] = ent
 
-    # 2. Обрабатываем связи (и создаем сущности на лету, если их не было в списке)
     relations: list[Relation] = []
     for rel_raw in raw["relations"]:
         rtype = rel_raw.get("type")
