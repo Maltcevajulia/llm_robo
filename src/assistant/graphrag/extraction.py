@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from assistant.infra.llm import LLMClient
 from assistant.infra.schemas import (
@@ -73,17 +74,49 @@ def _validate_entity(
             return None, f"код {name!r} отсутствует в тексте чанка"
         if code_type(norm) != etype:
             return None, f"код {norm!r} не соответствует типу {etype}"
-        name = norm
+        return Entity(type=etype, name=norm), None
     else:
-        # Приводим к нижнему регистру для поиска в словаре
-        name = name.lower()
-        # Передаем 3 аргумента, как требует функция
-        canon = canonical_name(name, etype, vocab)
+        # Пытаемся найти каноническое имя, проверяя разные варианты написания
+        canon = None
+        for variant in (name, name.lower(), name.capitalize()):
+            try:
+                # Передаем аргумент строго по имени vocabulary
+                canon = canonical_name(variant, vocabulary=vocab)
+            except TypeError:
+                # На случай если сигнатура функции другая
+                try:
+                    canon = canonical_name(variant, vocab)
+                except TypeError:
+                    canon = canonical_name(variant, etype, vocab)
+            
+            if canon is not None:
+                break
+                
         if canon is None:
             return None, f"название {name!r} не из словаря"
-        name = canon
-        
-    return Entity(type=etype, name=name), None
+        return Entity(type=etype, name=canon), None
+
+
+def _is_valid_response(parsed: Any) -> bool:
+    """Проверяет, что ответ модели похож на правду (чтобы сделать retry, если нет)."""
+    if not isinstance(parsed, dict):
+        return False
+    if not isinstance(parsed.get("entities"), list) or not isinstance(parsed.get("relations"), list):
+        return False
+    
+    # Проверяем, что у всех сущностей есть тип и имя
+    for ent in parsed["entities"]:
+        if not isinstance(ent, dict) or "type" not in ent or "name" not in ent:
+            return False
+            
+    # Проверяем, что у всех связей есть все нужные поля
+    for rel in parsed["relations"]:
+        if not isinstance(rel, dict):
+            return False
+        if not all(k in rel for k in ("subject", "subject_type", "type", "object", "object_type")):
+            return False
+            
+    return True
 
 
 def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
@@ -91,31 +124,26 @@ def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
     messages = _build_messages(chunk, vocab)
 
     raw = None
-    for _ in range(2):
+    for attempt in range(2):
         try:
             resp = llm.chat(messages, json_schema=EXTRACTION_SCHEMA)
-            raw = json.loads(resp.content)
-            if isinstance(raw, dict):
+            parsed = json.loads(resp.content)
+            if _is_valid_response(parsed):
+                raw = parsed
                 break
-            raw = None
         except Exception:
-            raw = None
-    if not isinstance(raw, dict):
+            pass
+        raw = None
+
+    if raw is None:
         return ExtractionResult(chunk_id=chunk.chunk_id, doc_id=chunk.doc_id, dropped=1)
 
     dropped = 0
-    entities: dict[str, Entity] = {}  # node_id -> Entity
-    by_name: dict[str, Entity] = {}   # исходное имя -> Entity
+    entities: dict[str, Entity] = {}
+    by_name: dict[str, Entity] = {}
 
     # 1. Сначала добавляем сущности из списка entities
-    entities_raw = raw.get("entities")
-    if not isinstance(entities_raw, list):
-        entities_raw = []
-    
-    for ent_raw in entities_raw:
-        if not isinstance(ent_raw, dict):
-            dropped += 1
-            continue
+    for ent_raw in raw["entities"]:
         ent, err = _validate_entity(ent_raw, chunk.text, vocab)
         if err:
             dropped += 1
@@ -125,15 +153,7 @@ def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
 
     # 2. Обрабатываем связи
     relations: list[Relation] = []
-    relations_raw = raw.get("relations")
-    if not isinstance(relations_raw, list):
-        relations_raw = []
-
-    for rel_raw in relations_raw:
-        if not isinstance(rel_raw, dict):
-            dropped += 1
-            continue
-        
+    for rel_raw in raw["relations"]:
         rtype = rel_raw.get("type")
         if rtype not in RELATION_SIGNATURES:
             dropped += 1
