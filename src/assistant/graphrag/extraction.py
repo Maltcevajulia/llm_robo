@@ -21,17 +21,19 @@ from assistant.infra.config import vocabulary
 
 def _extract_valid_codes(text: str) -> set[str]:
     """Извлекает все валидные коды из текста (с учетом русских букв и пробелов)."""
-    # Ищем паттерн: 1-3 буквы, пробел или дефис, 2-4 цифры, возможно буква в конце
-    pattern = r'(?<![A-ZА-Я])([A-ZА-Я]{1,3})[\s\-]+(\d{2,4})([A-ZА-Я]?)(?![A-ZА-Я])'
+    # Ищем паттерн: 1-3 буквы, пробел или дефис, 2-4 цифры, опционально еще дефис и цифры, 
+    # опционально буква в конце.
+    pattern = r'(?<![A-ZА-Я])([A-ZА-Я]{1,3})[\s\-]+(\d{2,4})([\s\-]+\d{2,4})?([A-ZА-Я]?)(?![A-ZА-Я])'
     matches = re.findall(pattern, text.upper())
     
-    # Таблица замены русских букв на английские (ровно 12 пар)
+    # Таблица замены русских букв на английские
     trans = str.maketrans("АВЕКМНОРСТУХ", "ABEKMHOPCTYX")
     codes = set()
-    for prefix, digits, suffix in matches:
+    for prefix, digits, sub_digits, suffix in matches:
         p = prefix.translate(trans)
         s = suffix.translate(trans)
-        codes.add(f"{p}-{digits}{s}")
+        d2 = sub_digits.translate(trans) if sub_digits else ""
+        codes.add(f"{p}-{digits}{d2}{s}")
     return codes
 
 
@@ -85,8 +87,6 @@ def _validate_entity(
         return None, "пустое имя"
 
     if etype in ("Model", "Part", "ErrorCode", "Procedure"):
-        # Приводим имя к каноническому виду: заменяем пробелы на дефисы, переводим в верхний регистр,
-        # и заменяем русские буквы на английские
         name_upper = name.upper().replace(" ", "-")
         trans = str.maketrans("АВЕКМНОРСТУХ", "ABEKMHOPCTYX")
         norm = name_upper.translate(trans)
@@ -98,14 +98,32 @@ def _validate_entity(
         return Entity(type=etype, name=norm), None
     else:
         allowed_names = vocab.get(etype, [])
+        normalized_name = (
+            name.lower()
+            .replace("ооо", "")
+            .replace("«", "")
+            .replace("»", "")
+            .replace('"', "")
+            .strip()
+        )
+
         canon = None
         for allowed in allowed_names:
-            if allowed.lower() == name.lower():
+            normalized_allowed = (
+                allowed.lower()
+                .replace("ооо", "")
+                .replace("«", "")
+                .replace("»", "")
+                .replace('"', "")
+                .strip()
+            )
+            if normalized_allowed == normalized_name:
                 canon = allowed
                 break
-        
+
         if canon is None:
             return None, f"название {name!r} не из словаря"
+
         return Entity(type=etype, name=canon), None
 
 
@@ -154,7 +172,9 @@ def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
             dropped += 1
             continue
         entities[ent.node_id] = ent
-        by_name[str(ent_raw.get("name", "")).strip()] = ent
+        # Сохраняем ключи строго в нижнем регистре
+        by_name[str(ent_raw.get("name", "")).strip().lower()] = ent
+        by_name[ent.name.lower()] = ent
 
     relations: list[Relation] = []
     for rel_raw in raw["relations"]:
@@ -166,8 +186,8 @@ def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
         subj_name = str(rel_raw.get("subject", "")).strip()
         obj_name = str(rel_raw.get("object", "")).strip()
         
-        if subj_name in by_name:
-            subj = by_name[subj_name]
+        if subj_name.lower() in by_name:
+            subj = by_name[subj_name.lower()] # Берем по нижнему регистру
         else:
             subj_type = rel_raw.get("subject_type")
             subj, err = _validate_entity({"type": subj_type, "name": subj_name}, chunk.text, vocab)
@@ -175,10 +195,10 @@ def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
                 dropped += 1
                 continue
             entities[subj.node_id] = subj
-            by_name[subj_name] = subj
+            by_name[subj_name.lower()] = subj
             
-        if obj_name in by_name:
-            obj = by_name[obj_name]
+        if obj_name.lower() in by_name:
+            obj = by_name[obj_name.lower()] # Берем по нижнему регистру
         else:
             obj_type = rel_raw.get("object_type")
             obj, err = _validate_entity({"type": obj_type, "name": obj_name}, chunk.text, vocab)
@@ -186,7 +206,7 @@ def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
                 dropped += 1
                 continue
             entities[obj.node_id] = obj
-            by_name[obj_name] = obj
+            by_name[obj_name.lower()] = obj
             
         rel = Relation(subject=subj, type=rtype, object=obj)
         if not rel.matches_schema():
