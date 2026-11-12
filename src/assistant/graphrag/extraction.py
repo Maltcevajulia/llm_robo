@@ -15,7 +15,7 @@ from assistant.infra.schemas import (
     ENTITY_TYPES,
     RELATION_SIGNATURES,
 )
-from assistant.infra.grounding import find_codes, normalize_code, canonical_name, code_type
+from assistant.infra.grounding import find_codes, normalize_code, code_type
 from assistant.infra.config import vocabulary
 
 
@@ -76,40 +76,30 @@ def _validate_entity(
             return None, f"код {norm!r} не соответствует типу {etype}"
         return Entity(type=etype, name=norm), None
     else:
-        # Пытаемся найти каноническое имя, проверяя разные варианты написания
+        # Прямой поиск по словарю (игнорируя регистр)
+        allowed_names = vocab.get(etype, [])
         canon = None
-        for variant in (name, name.lower(), name.capitalize()):
-            try:
-                # Передаем аргумент строго по имени vocabulary
-                canon = canonical_name(variant, vocabulary=vocab)
-            except TypeError:
-                # На случай если сигнатура функции другая
-                try:
-                    canon = canonical_name(variant, vocab)
-                except TypeError:
-                    canon = canonical_name(variant, etype, vocab)
-            
-            if canon is not None:
+        for allowed in allowed_names:
+            if allowed.lower() == name.lower():
+                canon = allowed
                 break
-                
+        
         if canon is None:
             return None, f"название {name!r} не из словаря"
         return Entity(type=etype, name=canon), None
 
 
 def _is_valid_response(parsed: Any) -> bool:
-    """Проверяет, что ответ модели похож на правду (чтобы сделать retry, если нет)."""
+    """Проверяет, что ответ модели содержит нужные списки и поля."""
     if not isinstance(parsed, dict):
         return False
     if not isinstance(parsed.get("entities"), list) or not isinstance(parsed.get("relations"), list):
         return False
     
-    # Проверяем, что у всех сущностей есть тип и имя
     for ent in parsed["entities"]:
         if not isinstance(ent, dict) or "type" not in ent or "name" not in ent:
             return False
             
-    # Проверяем, что у всех связей есть все нужные поля
     for rel in parsed["relations"]:
         if not isinstance(rel, dict):
             return False
@@ -151,7 +141,7 @@ def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
         entities[ent.node_id] = ent
         by_name[str(ent_raw.get("name", "")).strip()] = ent
 
-    # 2. Обрабатываем связи
+    # 2. Обрабатываем связи (и создаем сущности на лету, если их не было в списке)
     relations: list[Relation] = []
     for rel_raw in raw["relations"]:
         rtype = rel_raw.get("type")
@@ -162,7 +152,6 @@ def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
         subj_name = str(rel_raw.get("subject", "")).strip()
         obj_name = str(rel_raw.get("object", "")).strip()
         
-        # Проверяем subject
         if subj_name in by_name:
             subj = by_name[subj_name]
         else:
@@ -174,7 +163,6 @@ def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
             entities[subj.node_id] = subj
             by_name[subj_name] = subj
             
-        # Проверяем object
         if obj_name in by_name:
             obj = by_name[obj_name]
         else:
