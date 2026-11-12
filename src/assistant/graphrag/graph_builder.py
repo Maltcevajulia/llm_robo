@@ -15,8 +15,6 @@ def build_graph(results: list[ExtractionResult]) -> nx.DiGraph:
     g = nx.DiGraph()
     g.graph["conflicts"] = 0
 
-    # 1. Собираем узлы и множество chunk_id-источников для каждого потенциального ребра.
-    #    Ключ ребра: (subject.node_id, object.node_id, type).
     edge_sources: dict[tuple[str, str, str], set[str]] = defaultdict(set)
 
     for res in results:
@@ -33,7 +31,7 @@ def build_graph(results: list[ExtractionResult]) -> nx.DiGraph:
                     sources=[res.chunk_id],
                 )
 
-    # 2. Собираем рёбра, проверяя схему. Пока только копим источники, в граф не добавляем.
+   
     for res in results:
         for rel in res.relations:
             if not rel.matches_schema():
@@ -44,8 +42,6 @@ def build_graph(results: list[ExtractionResult]) -> nx.DiGraph:
                 continue
             edge_sources[(u, v, rel.type)].add(res.chunk_id)
 
-    # 3. Разрешаем встречные REPLACED_BY.
-    #    Разделяем рёбра на обычные и пары замен.
     plain: list[tuple[str, str, str]] = []
     pairs: dict[frozenset[str], list[tuple[str, str, str]]] = defaultdict(list)
 
@@ -59,13 +55,11 @@ def build_graph(results: list[ExtractionResult]) -> nx.DiGraph:
         sources = sorted(edge_sources[(u, v, t)])
         g.add_edge(u, v, type=t, weight=len(sources), sources=sources)
 
-    # Обычные рёбра добавляем сразу.
+  
     for u, v, t in plain:
         _add_edge(u, v, t)
 
-    # Для пар замен:
-    # - если связь только в одну сторону, добавляем её;
-    # - если в обе, оставляем более весомую, при равенстве не добавляем ни одну.
+
     for _pair, rels in pairs.items():
         if len(rels) == 1:
             _add_edge(*rels[0])
@@ -81,7 +75,7 @@ def build_graph(results: list[ExtractionResult]) -> nx.DiGraph:
 
         if len(top) == 1:
             _add_edge(*top[0])
-        # если top_weight совпал у обоих направлений — не добавляем ничего
+      
         g.graph["conflicts"] += 1
 
     return g
