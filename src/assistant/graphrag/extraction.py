@@ -62,6 +62,7 @@ def _validate_entity(
     etype = raw.get("type")
     if etype not in ENTITY_TYPES:
         return None, f"неизвестный тип сущности {etype!r}"
+    
     name = str(raw.get("name", "")).strip()
     if not name:
         return None, "пустое имя"
@@ -74,25 +75,15 @@ def _validate_entity(
             return None, f"код {norm!r} не соответствует типу {etype}"
         name = norm
     else:
-        canon = canonical_name(name, vocab)
+        # Приводим к нижнему регистру для поиска в словаре
+        name = name.lower()
+        # Передаем 3 аргумента, как требует функция
+        canon = canonical_name(name, etype, vocab)
         if canon is None:
             return None, f"название {name!r} не из словаря"
         name = canon
+        
     return Entity(type=etype, name=name), None
-
-
-def _validate_relation(raw: dict, by_name: dict[str, Entity]) -> tuple[Relation | None, str | None]:
-    rtype = raw.get("type")
-    if rtype not in RELATION_SIGNATURES:
-        return None, f"неизвестный тип связи {rtype!r}"
-    subj = by_name.get(str(raw.get("subject", "")).strip())
-    obj = by_name.get(str(raw.get("object", "")).strip())
-    if subj is None or obj is None:
-        return None, "связь с отброшенным концом"
-    rel = Relation(subject=subj, type=rtype, object=obj)
-    if not rel.matches_schema():
-        return None, f"направление связи {rtype} не по схеме"
-    return rel, None
 
 
 def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
@@ -113,22 +104,70 @@ def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
         return ExtractionResult(chunk_id=chunk.chunk_id, doc_id=chunk.doc_id, dropped=1)
 
     dropped = 0
-    entities: list[Entity] = []
-    # ключ — то имя, что вернула модель; значение — каноническая Entity
-    by_name: dict[str, Entity] = {}
+    entities: dict[str, Entity] = {}  # node_id -> Entity
+    by_name: dict[str, Entity] = {}   # исходное имя -> Entity
 
-    for ent_raw in raw.get("entities", []) or []:
+    # 1. Сначала добавляем сущности из списка entities
+    entities_raw = raw.get("entities")
+    if not isinstance(entities_raw, list):
+        entities_raw = []
+    
+    for ent_raw in entities_raw:
+        if not isinstance(ent_raw, dict):
+            dropped += 1
+            continue
         ent, err = _validate_entity(ent_raw, chunk.text, vocab)
         if err:
             dropped += 1
             continue
-        entities.append(ent)
+        entities[ent.node_id] = ent
         by_name[str(ent_raw.get("name", "")).strip()] = ent
 
+    # 2. Обрабатываем связи
     relations: list[Relation] = []
-    for rel_raw in raw.get("relations", []) or []:
-        rel, err = _validate_relation(rel_raw, by_name)
-        if err:
+    relations_raw = raw.get("relations")
+    if not isinstance(relations_raw, list):
+        relations_raw = []
+
+    for rel_raw in relations_raw:
+        if not isinstance(rel_raw, dict):
+            dropped += 1
+            continue
+        
+        rtype = rel_raw.get("type")
+        if rtype not in RELATION_SIGNATURES:
+            dropped += 1
+            continue
+            
+        subj_name = str(rel_raw.get("subject", "")).strip()
+        obj_name = str(rel_raw.get("object", "")).strip()
+        
+        # Проверяем subject
+        if subj_name in by_name:
+            subj = by_name[subj_name]
+        else:
+            subj_type = rel_raw.get("subject_type")
+            subj, err = _validate_entity({"type": subj_type, "name": subj_name}, chunk.text, vocab)
+            if err:
+                dropped += 1
+                continue
+            entities[subj.node_id] = subj
+            by_name[subj_name] = subj
+            
+        # Проверяем object
+        if obj_name in by_name:
+            obj = by_name[obj_name]
+        else:
+            obj_type = rel_raw.get("object_type")
+            obj, err = _validate_entity({"type": obj_type, "name": obj_name}, chunk.text, vocab)
+            if err:
+                dropped += 1
+                continue
+            entities[obj.node_id] = obj
+            by_name[obj_name] = obj
+            
+        rel = Relation(subject=subj, type=rtype, object=obj)
+        if not rel.matches_schema():
             dropped += 1
             continue
         relations.append(rel)
@@ -136,7 +175,7 @@ def extract_chunk(chunk: Chunk, llm: LLMClient) -> ExtractionResult:
     return ExtractionResult(
         chunk_id=chunk.chunk_id,
         doc_id=chunk.doc_id,
-        entities=entities,
+        entities=list(entities.values()),
         relations=relations,
         dropped=dropped,
     )
