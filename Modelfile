@@ -1,0 +1,15 @@
+FROM /root/.ollama/models/blobs/sha256-85e4a5b7b8ef0e48af0e8658f5aaab9c2324c76c1641493f4d1e25fce54b18b9
+PARAMETER num_ctx 8192
+PARAMETER num_predict 4096
+PARAMETER temperature 0.0
+
+TEMPLATE """{{ if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}{{ if .Tools }}<|im_start|>system
+You have access to the following tools:
+{{ range .Tools }}{{ . }}
+{{ end }}<|im_end|>
+{{ end }}{{ range .Messages }}<|im_start|>{{ .Role }}
+{{ .Content }}<|im_end|>
+{{ end }}<|im_start|>assistant
+"""

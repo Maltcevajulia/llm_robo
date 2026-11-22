@@ -6,10 +6,10 @@ import json
 import re
 from collections.abc import Callable
 
-from assistant.infra.llm import LLMClient, tool_message
-from assistant.infra.erp_client import ErpUnavailable
-from assistant.infra.schemas import AgentResult, ToolStep
 from assistant.agent.tools import TOOL_SCHEMAS, WAREHOUSES
+from assistant.infra.erp_client import ErpUnavailable
+from assistant.infra.llm import LLMClient, tool_message
+from assistant.infra.schemas import AgentResult, ToolStep
 
 MAX_ERP_RETRIES = 3  # первая попытка + 2 повтора
 NOT_FOUND = "в базе знаний не найдено"

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
+from assistant.graphrag.search import global_search, local_search
+from assistant.infra.erp_client import ErpClient, ErpNotFound, ErpRejected
 from assistant.infra.llm import LLMClient
 from assistant.infra.schemas import KnowledgeBase
-from assistant.infra.erp_client import ErpClient, ErpNotFound, ErpRejected
-from assistant.graphrag.search import local_search, global_search
 
 WAREHOUSES = ["Москва", "Санкт-Петербург", "Казань", "Новосибирск"]
 PART_RE = re.compile(r"^P-\d{4}[A-Z]?$")

@@ -1,7 +1,11 @@
 from __future__ import annotations
+
 from collections import defaultdict
+
 import networkx as nx
+
 from assistant.infra.schemas import ExtractionResult
+
 
 def build_graph(results: list[ExtractionResult]) -> nx.DiGraph:
     """Объединяет результаты по всем чанкам в один направленный граф.

@@ -37,9 +37,7 @@ services:
     image: ollama/ollama:0.15.4
     profiles: ["local-llm"]
     volumes:
-      - ollama:/root/.ollama
-    ports:
-      - "11434:11434"
-
-volumes:
-  ollama:
+      - C:/Users/RoyalPC/.ollama:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+      - GODEBUG=tlsmlkem=0

@@ -46,6 +46,8 @@ def normalize_code(raw: str) -> str | None:
 def find_codes(text: str) -> list[str]:
     """Все коды из текста в каноническом виде, без повторов, в порядке появления."""
     found: list[str] = []
+    text = text.upper() 
+    text = re.sub(r'\b([a-zA-Zа-яА-Я]+)[\s-]+(\d+)\b', r'\1-\2', text)
     for match in _CODE.finditer(text):
         code = _canonical(*match.groups())
         if code and code not in found:

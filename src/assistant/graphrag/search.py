@@ -7,9 +7,9 @@ from collections import deque
 
 import networkx as nx
 
-from assistant.infra.llm import LLMClient
-from assistant.infra.schemas import Answer, KnowledgeBase, MAP_SCHEMA
 from assistant.infra.grounding import find_codes, find_names
+from assistant.infra.llm import LLMClient
+from assistant.infra.schemas import MAP_SCHEMA, Answer, KnowledgeBase
 
 MAX_FACTS_CHARS = 8000
 NOT_FOUND = "в базе знаний не найдено"
@@ -22,24 +22,20 @@ def _doc_of(chunk_id: str) -> str:
 
 def _find_anchor_nodes(question: str, kb: KnowledgeBase) -> list[str]:
     """Опорные узлы графа по кодам и названиям из вопроса."""
-    codes = find_codes(question) or []
-    try:
-        names = find_names(question, kb.vocabulary) or []
-    except TypeError:
-        # fallback, если сигнатура отличается
-        try:
-            names = find_names(question) or []
-        except Exception:
-            names = []
+    codes = set(find_codes(question) or [])
+    names = find_names(question, kb.vocabulary) or []
 
-    wanted = set(codes) | set(names)
-    if not wanted:
-        return []
+    wanted_names = set(names)
 
     anchors: list[str] = []
+
     for nid, data in kb.graph.nodes(data=True):
-        if data.get("name") in wanted:
+        node_name = data.get("name")
+        node_type = data.get("type")
+
+        if node_name in codes or (node_type, node_name) in wanted_names:
             anchors.append(nid)
+
     return list(dict.fromkeys(anchors))
 
 
@@ -170,6 +166,12 @@ def local_search(question: str, kb: KnowledgeBase, llm: LLMClient) -> Answer:
             return Answer(text=NOT_FOUND, sources=[], facts=[], refused=True)
 
     anchors = _find_anchor_nodes(question, kb)
+    for code in codes:
+        for node_id, data in g.nodes(data=True):
+            if data.get("name") == code:
+                if node_id not in anchors:
+                    anchors.append(node_id)
+                break
     if not anchors:
         return Answer(text=NOT_FOUND, sources=[], facts=[], refused=True)
 

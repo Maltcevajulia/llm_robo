@@ -88,7 +88,7 @@ class LLMClient:
         *,
         tools: list[dict] | None = None,
         json_schema: dict | None = None,
-        max_tokens: int = 1024,
+        max_tokens: int = 4096,
     ) -> LLMResponse:
         """Один ответ модели на историю сообщений.
 
